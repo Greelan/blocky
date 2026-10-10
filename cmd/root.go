@@ -40,7 +40,7 @@ func NewRootCommand() *cobra.Command {
 and ad-blocker for local network.
 
 Complete documentation is available at https://github.com/0xERR0R/blocky`,
-		PreRunE: initConfigPreRun,
+		PreRunE: resolveConfigPathPreRun,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return newServeCommand().RunE(cmd, args)
 		},
@@ -83,26 +83,22 @@ func initConfigPreRun(cmd *cobra.Command, args []string) error {
 	return initConfig()
 }
 
+// serve loads the config itself, once it has set up logging from it
+func resolveConfigPathPreRun(*cobra.Command, []string) error {
+	resolveConfigPath()
+
+	return nil
+}
+
 func initConfig() error {
-	if configPath == defaultConfigPath {
-		val, present := os.LookupEnv(configFileEnvVar)
-		if present {
-			configPath = val
-		} else {
-			val, present = os.LookupEnv(configFileEnvVarOld)
-			if present {
-				configPath = val
-			}
-		}
-	}
+	resolveConfigPath()
 
 	cfg, err := config.LoadConfig(configPath, false)
 	if err != nil {
 		return fmt.Errorf("unable to load configuration file '%s': %w", configPath, err)
 	}
 
-	// a command answers in the terminal, so it never logs to syslog; serve
-	// configures logging again from the full config when the server starts
+	// a command answers in the terminal, so it never logs to syslog
 	logCfg := cfg.Log
 	if logCfg.Target == log.TargetTypeSyslog {
 		logCfg.Target = log.TargetTypeStdout
@@ -110,8 +106,13 @@ func initConfig() error {
 
 	log.Configure(&logCfg)
 
-	if len(cfg.Ports.HTTP) != 0 {
-		split := strings.Split(cfg.Ports.HTTP[0], ":")
+	return setListenAddresses(cfg.Ports)
+}
+
+// setListenAddresses points the commands at the server's first HTTP and DNS listen addresses
+func setListenAddresses(ports config.Ports) error {
+	if len(ports.HTTP) != 0 {
+		split := strings.Split(ports.HTTP[0], ":")
 
 		lastIdx := len(split) - 1
 
@@ -125,10 +126,10 @@ func initConfig() error {
 		apiPort = port
 	}
 
-	if len(cfg.Ports.DNS) != 0 {
-		host, port, err := splitListenAddress(cfg.Ports.DNS[0])
+	if len(ports.DNS) != 0 {
+		host, port, err := splitListenAddress(ports.DNS[0])
 		if err != nil {
-			return fmt.Errorf("can't parse DNS listen address '%s': %w", cfg.Ports.DNS[0], err)
+			return fmt.Errorf("can't parse DNS listen address '%s': %w", ports.DNS[0], err)
 		}
 
 		if host != "" {
@@ -141,6 +142,20 @@ func initConfig() error {
 	}
 
 	return nil
+}
+
+func resolveConfigPath() {
+	if configPath == defaultConfigPath {
+		val, present := os.LookupEnv(configFileEnvVar)
+		if present {
+			configPath = val
+		} else {
+			val, present = os.LookupEnv(configFileEnvVarOld)
+			if present {
+				configPath = val
+			}
+		}
+	}
 }
 
 // splitListenAddress splits a `ports.*` entry into host and port. Entries are normalized

@@ -7,6 +7,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -665,6 +666,48 @@ func LoadConfig(path string, mandatory bool) (rCfg *Config, rerr error) {
 	logger := logrus.NewEntry(log.Log())
 
 	return loadConfig(logger, path, mandatory)
+}
+
+// LoadLogConfig reads only the log section of the config at path, so logging can be
+// set up before the rest of the config is loaded and its warnings are logged
+func LoadLogConfig(path string) (*log.Config, error) {
+	fs, err := os.Stat(path)
+	if err != nil {
+		return nil, fmt.Errorf("can't read config file(s): %w", err)
+	}
+
+	silent := logrus.New()
+	silent.SetOutput(io.Discard)
+
+	logger := logrus.NewEntry(silent)
+
+	data, _, _, err := readConfigSource(logger, path, fs)
+	if err != nil {
+		return nil, err
+	}
+
+	cfg := struct {
+		Log        log.Config `yaml:"log"`
+		Deprecated struct {
+			LogLevel     *logrus.Level   `yaml:"logLevel"`
+			LogFormat    *log.FormatType `yaml:"logFormat"`
+			LogPrivacy   *bool           `yaml:"logPrivacy"`
+			LogTimestamp *bool           `yaml:"logTimestamp"`
+		} `yaml:",inline"`
+	}{Log: *log.DefaultConfig()}
+
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return nil, fmt.Errorf("can't read log config: %w", err)
+	}
+
+	Migrate(logger, "", cfg.Deprecated, map[string]Migrator{
+		"logLevel":     Move(To("log.level", &cfg.Log)),
+		"logFormat":    Move(To("log.format", &cfg.Log)),
+		"logPrivacy":   Move(To("log.privacy", &cfg.Log)),
+		"logTimestamp": Move(To("log.timestamp", &cfg.Log)),
+	})
+
+	return &cfg.Log, nil
 }
 
 func loadConfig(logger *logrus.Entry, path string, mandatory bool) (rCfg *Config, rerr error) {

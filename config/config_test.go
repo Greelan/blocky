@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"net"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -151,6 +152,86 @@ var _ = Describe("Config", func() {
 				Expect(hook.Messages).Should(ContainElement(ContainSubstring("startVerifyUpstream")))
 				Expect(c.Upstreams.Init.Strategy).Should(Equal(InitStrategyFailOnError))
 			})
+		})
+	})
+
+	Describe("LoadLogConfig", func() {
+		It("reads the log section, defaulting what it leaves out", func() {
+			cfgFile := tmpDir.CreateStringFile("config.yml",
+				"log:",
+				"  level: warn",
+				"  target: syslog",
+			)
+
+			logCfg, err := LoadLogConfig(cfgFile.Path)
+			Expect(err).Should(Succeed())
+			Expect(logCfg.Level).Should(Equal(logrus.WarnLevel))
+			Expect(logCfg.Target).Should(Equal(log.TargetTypeSyslog))
+			Expect(logCfg.Syslog.Tag).Should(Equal("blocky"))
+			Expect(logCfg.Timestamp).Should(BeTrue())
+		})
+
+		It("ignores the rest of the config, valid or not", func() {
+			cfgFile := tmpDir.CreateStringFile("config.yml",
+				"caching:",
+				"  minTime: 5",
+				"ports:",
+				"  dohPath: nope",
+				"unknown: true",
+				"log:",
+				"  level: debug",
+			)
+
+			logCfg, err := LoadLogConfig(cfgFile.Path)
+			Expect(err).Should(Succeed())
+			Expect(logCfg.Level).Should(Equal(logrus.DebugLevel))
+		})
+
+		It("reads the log section from a config folder", func() {
+			folder := helpertest.NewTmpFolder("config")
+			folder.CreateStringFile("a.yml", "upstreams:", "  groups:", "    default: [1.1.1.1]")
+			folder.CreateStringFile("b.yml", "log:", "  target: stderr")
+
+			logCfg, err := LoadLogConfig(folder.Path)
+			Expect(err).Should(Succeed())
+			Expect(logCfg.Target).Should(Equal(log.TargetTypeStderr))
+		})
+
+		It("applies deprecated log options as loading the config does", func() {
+			cfgFile := tmpDir.CreateStringFile("config.yml",
+				"logLevel: warn",
+				"logTimestamp: false",
+				"logPrivacy: false",
+				"log:",
+				"  privacy: true",
+			)
+
+			logCfg, err := LoadLogConfig(cfgFile.Path)
+			Expect(err).Should(Succeed())
+
+			c, err = LoadConfig(cfgFile.Path, false)
+			Expect(err).Should(Succeed())
+
+			Expect(*logCfg).Should(Equal(c.Log))
+			Expect(logCfg.Level).Should(Equal(logrus.WarnLevel))
+			Expect(logCfg.Timestamp).Should(BeFalse())
+			// the new option is set, so the deprecated one is ignored
+			Expect(logCfg.Privacy).Should(BeTrue())
+		})
+
+		It("fails on an invalid log section", func() {
+			cfgFile := tmpDir.CreateStringFile("config.yml",
+				"log:",
+				"  target: nowhere",
+			)
+
+			_, err := LoadLogConfig(cfgFile.Path)
+			Expect(err).Should(HaveOccurred())
+		})
+
+		It("fails without a config", func() {
+			_, err := LoadLogConfig(filepath.Join(tmpDir.Path, "missing.yml"))
+			Expect(err).Should(HaveOccurred())
 		})
 	})
 

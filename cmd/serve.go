@@ -36,7 +36,7 @@ func newServeCommand() *cobra.Command {
 		Args:              cobra.NoArgs,
 		Short:             "start blocky DNS server (default command)",
 		RunE:              startServer,
-		PersistentPreRunE: initConfigPreRun,
+		PersistentPreRunE: resolveConfigPathPreRun,
 		SilenceUsage:      true,
 	}
 }
@@ -77,15 +77,40 @@ func warnMissingPrivilegedPortCapability(ports config.Ports) {
 	}
 }
 
-func startServer(_ *cobra.Command, _ []string) error {
-	printBanner()
+// loadServerConfig loads the config and sets up logging from it
+func loadServerConfig() (*config.Config, error) {
+	// set up logging from the config before loading the rest of it, so its
+	// warnings go there too
+	logCfg, err := config.LoadLogConfig(configPath)
+	if err == nil {
+		log.Configure(logCfg)
+	}
 
 	cfg, err := config.LoadConfig(configPath, isConfigMandatory)
 	if err != nil {
-		return fmt.Errorf("unable to load configuration: %w", err)
+		return nil, fmt.Errorf("unable to load configuration: %w", err)
 	}
 
-	log.Configure(&cfg.Log)
+	// the log section couldn't be read on its own, or reads differently in full
+	if logCfg == nil || *logCfg != cfg.Log {
+		log.Configure(&cfg.Log)
+	}
+
+	// reject a listen address the other commands can't parse
+	if err := setListenAddresses(cfg.Ports); err != nil {
+		return nil, err
+	}
+
+	return cfg, nil
+}
+
+func startServer(_ *cobra.Command, _ []string) error {
+	cfg, err := loadServerConfig()
+	if err != nil {
+		return err
+	}
+
+	printBanner()
 
 	warnMissingPrivilegedPortCapability(cfg.Ports)
 
